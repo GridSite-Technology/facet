@@ -1,0 +1,1959 @@
+openapi: 3.1.0
+info:
+  title: "FTAI (Facility-to-Agent Interface) API"
+  version: "1.0.0"
+  summary: "Project FACET — Standard interface between AI agents and facilities."
+  description: |
+    FTAI defines a hardened, policy-enforcing API boundary between an AI agent and a facility.
+    It supports:
+      - Serving the facility definition (TIF: "This-Is-the-Facility")
+      - Reading current/historical state, metrics, and events
+      - Publishing advisories and cases (optional, but recommended)
+      - Requesting, approving, and executing actions through a deterministic policy engine
+      - Exposing effective constraints/authority so agents can behave safely
+      - Producing auditable traces for all access and control operations
+
+    Security model:
+      - The agent is NOT trusted.
+      - FTAI MUST enforce RBAC/ABAC, envelopes, rate limits, lockouts, windows, and approvals.
+      - Any action execution must be gated by an approval artifact and re-validation of preconditions.
+
+    Conformance profiles:
+      - FTAI-Profile-RO (read-only)
+      - FTAI-Profile-Approve (agent can request approvals)
+      - FTAI-Profile-Exec (agent can execute approved actions, if enabled)
+
+servers:
+  - url: https://{host}/v1
+    description: "FTAI v1 base"
+    variables:
+      host:
+        default: facility.example.com
+
+tags:
+  - name: Discovery
+  - name: TIF
+  - name: State
+  - name: Metrics
+  - name: Events
+  - name: Streaming
+  - name: Advisories
+  - name: Cases
+  - name: Actions
+  - name: Approvals
+  - name: Constraints
+  - name: Audit
+
+security:
+  - OAuth2ClientCredentials: []
+  - MutualTLS: []
+
+x-ftai:
+  project: "FACET"
+  profiles:
+    - "FTAI-Profile-RO"
+    - "FTAI-Profile-Approve"
+    - "FTAI-Profile-Exec"
+
+paths:
+
+  /:
+    get:
+      tags: [Discovery]
+      summary: "Discovery document (capabilities, links, server time)"
+      operationId: getDiscovery
+      responses:
+        "200":
+          description: "Discovery object"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Discovery"
+              examples:
+                default:
+                  value:
+                    ftai_version: "1.0.0"
+                    server_time: "2026-01-07T03:45:01Z"
+                    conformance:
+                      profiles: ["FTAI-Profile-Approve"]
+                    endpoints:
+                      tif: "/facility/tif"
+                      tif_text: "/facility/tif?format=plain"
+                      state: "/facility/state"
+                      metrics_catalog: "/facility/metrics/catalog"
+                      metrics_query: "/facility/metrics/query"
+                      events_query: "/facility/events"
+                      actions_request: "/actions/request"
+                      approvals: "/approvals"
+                      constraints_effective: "/facility/constraints/effective"
+                      stream_events: "/stream/events"
+                      stream_state: "/stream/state"
+                    capabilities:
+                      supports_streaming: true
+                      supports_actions: true
+                      supports_approvals: true
+                      supports_execution: false
+                      supports_advisories: true
+                      supports_audit_read: true
+
+  /.well-known/ftai:
+    get:
+      tags: [Discovery]
+      summary: "Well-known discovery (stable path for clients)"
+      operationId: getWellKnown
+      responses:
+        "200":
+          description: "Well-known discovery object"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Discovery"
+
+  /facility/tif:
+    get:
+      tags: [TIF]
+      summary: "Get facility definition (TIF)"
+      description: |
+        Returns the canonical facility definition in TIF format.
+        Content negotiation via Accept:
+          - application/tif+yaml;version=1
+          - application/tif+json;version=1
+          - text/tif+plain;version=1 (deterministic rendering)
+      operationId: getTif
+      parameters:
+        - $ref: "#/components/parameters/Format"
+        - $ref: "#/components/parameters/TifVersion"
+      responses:
+        "200":
+          description: "TIF document"
+          headers:
+            ETag:
+              $ref: "#/components/headers/ETag"
+            X-Canonical-Hash:
+              $ref: "#/components/headers/XCanonicalHash"
+            X-Generated-At:
+              $ref: "#/components/headers/XGeneratedAt"
+          content:
+            application/tif+yaml:
+              schema:
+                type: string
+                description: "YAML content (canonical)"
+            application/tif+json:
+              schema:
+                type: object
+                description: "JSON content (canonical)"
+            text/tif+plain:
+              schema:
+                type: string
+                description: "Plaintext rendering derived from canonical content"
+        "304":
+          description: "Not modified"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /facility/state:
+    get:
+      tags: [State]
+      summary: "Get current facility state snapshot"
+      operationId: getFacilityState
+      responses:
+        "200":
+          description: "Current facility state snapshot"
+          headers:
+            X-Snapshot-At:
+              $ref: "#/components/headers/XSnapshotAt"
+            X-Correlation-Id:
+              $ref: "#/components/headers/XCorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FacilityState"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /facility/state/history:
+    get:
+      tags: [State]
+      summary: "Get historical facility state snapshots"
+      operationId: getFacilityStateHistory
+      parameters:
+        - $ref: "#/components/parameters/TimeFrom"
+        - $ref: "#/components/parameters/TimeTo"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+        - name: keys
+          in: query
+          required: false
+          description: "Optional subset of metric keys to include in each snapshot."
+          schema:
+            type: array
+            items: { type: string }
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: "Paginated state snapshots"
+          headers:
+            X-Next-Cursor:
+              $ref: "#/components/headers/XNextCursor"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedFacilityStateHistory"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /facility/metrics/catalog:
+    get:
+      tags: [Metrics]
+      summary: "Get metrics catalog"
+      description: |
+        Returns definitions for all metrics available through FTAI, including:
+          - unit, domain, semantics
+          - normal ranges (optional)
+          - aggregation compatibility
+      operationId: getMetricsCatalog
+      responses:
+        "200":
+          description: "Metrics catalog"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsCatalog"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /facility/metrics/query:
+    post:
+      tags: [Metrics]
+      summary: "Query metrics time series"
+      description: |
+        Queries time-series data for one or more metric keys, with aggregation and downsampling options.
+        Implementations SHOULD enforce maximum ranges and points returned (see constraints endpoint).
+      operationId: queryMetrics
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MetricsQueryRequest"
+      responses:
+        "200":
+          description: "Time series query results"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsQueryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+
+  /facility/events:
+    get:
+      tags: [Events]
+      summary: "Query facility events"
+      description: |
+        Returns a filtered, paginated list of facility events (alarms, alerts, changes, access events, etc.).
+        Implementations SHOULD support filtering by:
+          - time range
+          - severity
+          - event codes
+          - asset_id
+          - zone_id
+          - domain/system
+      operationId: queryEvents
+      parameters:
+        - $ref: "#/components/parameters/TimeFrom"
+        - $ref: "#/components/parameters/TimeTo"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+        - name: severity
+          in: query
+          schema:
+            $ref: "#/components/schemas/EventSeverity"
+        - name: codes
+          in: query
+          description: "Filter by event codes."
+          schema:
+            type: array
+            items: { type: string }
+          style: form
+          explode: true
+        - name: asset_id
+          in: query
+          schema: { type: string }
+        - name: zone_id
+          in: query
+          schema: { type: string }
+        - name: domain
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: "Paginated events"
+          headers:
+            X-Next-Cursor:
+              $ref: "#/components/headers/XNextCursor"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedEvents"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /stream/events:
+    get:
+      tags: [Streaming]
+      summary: "Server-Sent Events stream of facility events"
+      description: |
+        SSE stream that emits facility events in near real-time.
+        Events are delivered as text/event-stream. Each SSE 'data:' payload is a JSON-serialized FacilityEvent.
+        Implementations SHOULD support Last-Event-ID resume.
+      operationId: streamEvents
+      parameters:
+        - name: last_event_id
+          in: query
+          required: false
+          schema: { type: string }
+          description: "Resume stream from a given event id (optional)."
+      responses:
+        "200":
+          description: "SSE stream"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "SSE stream; each data line is JSON event payload"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /stream/state:
+    get:
+      tags: [Streaming]
+      summary: "SSE stream of facility state snapshots"
+      description: |
+        SSE stream that emits compact FacilityState snapshots when significant changes occur
+        (and optionally on a heartbeat interval).
+      operationId: streamState
+      responses:
+        "200":
+          description: "SSE stream"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /advisories:
+    post:
+      tags: [Advisories]
+      summary: "Publish an advisory"
+      description: |
+        Allows an agent or authorized system to publish an advisory for display in portals, kiosks, or mobile apps.
+        Advisories are communication artifacts (not control actions) but MUST be audited.
+      operationId: publishAdvisory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdvisoryCreateRequest"
+      responses:
+        "201":
+          description: "Advisory created"
+          headers:
+            Location:
+              description: "URL of created advisory"
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Advisory"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /advisories:
+    get:
+      tags: [Advisories]
+      summary: "List advisories"
+      operationId: listAdvisories
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+        - name: active
+          in: query
+          schema: { type: boolean, default: true }
+        - name: severity
+          in: query
+          schema:
+            $ref: "#/components/schemas/AdvisorySeverity"
+      responses:
+        "200":
+          description: "Paginated advisories"
+          headers:
+            X-Next-Cursor:
+              $ref: "#/components/headers/XNextCursor"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedAdvisories"
+
+  /advisories/{advisory_id}:
+    get:
+      tags: [Advisories]
+      summary: "Get an advisory"
+      operationId: getAdvisory
+      parameters:
+        - $ref: "#/components/parameters/AdvisoryId"
+      responses:
+        "200":
+          description: "Advisory"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Advisory"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /advisories/{advisory_id}/ack:
+    post:
+      tags: [Advisories]
+      summary: "Acknowledge an advisory (human action)"
+      description: |
+        Typically called by a portal/kiosk/mobile on behalf of a human user.
+        The caller MUST be authorized and the ack event MUST be audited.
+      operationId: acknowledgeAdvisory
+      parameters:
+        - $ref: "#/components/parameters/AdvisoryId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdvisoryAckRequest"
+      responses:
+        "200":
+          description: "Acknowledged"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdvisoryAckResponse"
+
+  /cases:
+    post:
+      tags: [Cases]
+      summary: "Create a case"
+      description: |
+        Creates an operational case (incident, investigation, optimization opportunity, etc.).
+        Used to group related events, metrics, actions, and operator notes.
+      operationId: createCase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaseCreateRequest"
+      responses:
+        "201":
+          description: "Case created"
+          headers:
+            Location:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Case"
+
+  /cases:
+    get:
+      tags: [Cases]
+      summary: "List cases"
+      operationId: listCases
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/CaseStatus"
+        - name: severity
+          in: query
+          schema:
+            $ref: "#/components/schemas/CaseSeverity"
+      responses:
+        "200":
+          description: "Paginated cases"
+          headers:
+            X-Next-Cursor:
+              $ref: "#/components/headers/XNextCursor"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedCases"
+
+  /cases/{case_id}:
+    get:
+      tags: [Cases]
+      summary: "Get a case"
+      operationId: getCase
+      parameters:
+        - $ref: "#/components/parameters/CaseId"
+      responses:
+        "200":
+          description: "Case"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Case"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      tags: [Cases]
+      summary: "Update a case"
+      operationId: updateCase
+      parameters:
+        - $ref: "#/components/parameters/CaseId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CaseUpdateRequest"
+      responses:
+        "200":
+          description: "Updated case"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Case"
+
+  /actions/catalog:
+    get:
+      tags: [Actions]
+      summary: "Get action catalog (effective)"
+      description: |
+        Returns the effective action catalog including any temporary overrides (e.g., lockouts).
+        This endpoint is OPTIONAL if actions are fully defined in TIF, but RECOMMENDED for runtime clarity.
+      operationId: getActionsCatalog
+      responses:
+        "200":
+          description: "Action catalog"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionsCatalog"
+
+  /actions/request:
+    post:
+      tags: [Actions]
+      summary: "Request an action (may create approval)"
+      description: |
+        Agent requests an action defined in TIF controls. FTAI enforces:
+          - schema validation (parameters)
+          - envelopes (min/max)
+          - rate limits
+          - windows/lockouts
+          - preconditions (live checks)
+          - authority tiers & caller scopes
+          - approval workflow (if required)
+
+        Execution behavior:
+          - If requested_mode=request_approval: MUST create approval if action is allowed.
+          - If requested_mode=execute_if_allowed: MAY execute only if:
+              - facility policy allows direct execution for this action
+              - caller has action:execute_direct scope
+              - no approvals required
+      operationId: requestAction
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ActionRequest"
+      responses:
+        "200":
+          description: "Action decision"
+          headers:
+            X-Action-Request-Id:
+              $ref: "#/components/headers/XActionRequestId"
+            X-Correlation-Id:
+              $ref: "#/components/headers/XCorrelationId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionDecision"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /actions/{action_request_id}:
+    get:
+      tags: [Actions]
+      summary: "Get action request status"
+      operationId: getActionRequest
+      parameters:
+        - $ref: "#/components/parameters/ActionRequestId"
+      responses:
+        "200":
+          description: "Action request"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionRequestResource"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /actions/{action_request_id}/execute:
+    post:
+      tags: [Actions]
+      summary: "Execute an approved action"
+      description: |
+        Executes an action request that is approved and eligible for execution.
+        MUST re-check preconditions, lockouts, envelopes, windows, and current authority before execution.
+        MUST be disabled globally if facility policy has execution_enabled=false.
+      operationId: executeApprovedAction
+      parameters:
+        - $ref: "#/components/parameters/ActionRequestId"
+      responses:
+        "200":
+          description: "Execution started/completed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionExecution"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+
+  /actions/{action_request_id}/abort:
+    post:
+      tags: [Actions]
+      summary: "Abort a running action"
+      description: "Best-effort abort; supported only for actions/adapters that implement abort semantics."
+      operationId: abortAction
+      parameters:
+        - $ref: "#/components/parameters/ActionRequestId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AbortRequest"
+      responses:
+        "200":
+          description: "Abort result"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AbortResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /approvals:
+    get:
+      tags: [Approvals]
+      summary: "List approvals"
+      operationId: listApprovals
+      parameters:
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/ApprovalStatus"
+        - name: action_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: "Paginated approvals"
+          headers:
+            X-Next-Cursor:
+              $ref: "#/components/headers/XNextCursor"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedApprovals"
+
+  /approvals/{approval_id}:
+    get:
+      tags: [Approvals]
+      summary: "Get approval details"
+      operationId: getApproval
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      responses:
+        "200":
+          description: "Approval resource"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /approvals/{approval_id}/approve:
+    post:
+      tags: [Approvals]
+      summary: "Approve an action (human approval)"
+      description: |
+        Approves a pending approval. Typically invoked from portal/kiosk/mobile by a human user.
+        The approval action MUST be audited and MUST verify:
+          - approver identity
+          - required role membership
+          - approval not expired
+          - action request parameters unchanged (or else require re-approval)
+      operationId: approve
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalDecisionRequest"
+      responses:
+        "200":
+          description: "Approval updated"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+
+  /approvals/{approval_id}/deny:
+    post:
+      tags: [Approvals]
+      summary: "Deny an action (human denial)"
+      operationId: deny
+      parameters:
+        - $ref: "#/components/parameters/ApprovalId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ApprovalDecisionRequest"
+      responses:
+        "200":
+          description: "Approval updated"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Approval"
+
+  /facility/constraints/effective:
+    get:
+      tags: [Constraints]
+      summary: "Get effective constraints and authority"
+      description: |
+        Returns the effective runtime constraints, including:
+          - current AI tier
+          - execution enabled/disabled
+          - active lockouts
+          - maximum query ranges/limits
+          - effective envelopes and rate limits (including temporary overrides)
+          - maintenance/change windows
+      operationId: getEffectiveConstraints
+      responses:
+        "200":
+          description: "Effective constraints"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectiveConstraints"
+
+  /audit/records:
+    get:
+      tags: [Audit]
+      summary: "Query audit records"
+      description: |
+        Returns audited records for reads/writes/actions. Access SHOULD be restricted.
+        This endpoint is recommended for high-trust deployments and compliance/audit workflows.
+      operationId: queryAuditRecords
+      parameters:
+        - $ref: "#/components/parameters/TimeFrom"
+        - $ref: "#/components/parameters/TimeTo"
+        - $ref: "#/components/parameters/PageLimit"
+        - $ref: "#/components/parameters/PageCursor"
+        - name: category
+          in: query
+          schema:
+            $ref: "#/components/schemas/AuditCategory"
+        - name: principal_id
+          in: query
+          schema: { type: string }
+        - name: correlation_id
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: "Paginated audit records"
+          headers:
+            X-Next-Cursor:
+              $ref: "#/components/headers/XNextCursor"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PagedAuditRecords"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+components:
+
+  securitySchemes:
+    OAuth2ClientCredentials:
+      type: oauth2
+      description: "OAuth2 client credentials for service principals (agents/services)."
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/oauth2/token
+          scopes:
+            read:tif: "Read TIF facility definition"
+            read:state: "Read facility state"
+            read:metrics: "Query metrics"
+            read:events: "Query events"
+            stream:events: "Subscribe to event stream"
+            stream:state: "Subscribe to state stream"
+            write:advisories: "Publish advisories"
+            write:cases: "Create/update cases"
+            action:request: "Request actions (creates approvals)"
+            action:execute_direct: "Execute actions directly (rare; requires facility policy)"
+            action:execute_approved: "Execute approved actions (requires policy + tier)"
+            read:audit: "Read audit records (restricted)"
+    MutualTLS:
+      type: mutualTLS
+      description: "mTLS client certificate authentication (often used in OT boundary environments)."
+
+  parameters:
+    Format:
+      name: format
+      in: query
+      description: "Optional response format override. Primarily used for TIF."
+      required: false
+      schema:
+        type: string
+        enum: [yaml, json, plain]
+    TifVersion:
+      name: version
+      in: query
+      description: "TIF version to request"
+      required: false
+      schema:
+        type: string
+        default: "1"
+    TimeFrom:
+      name: from
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    TimeTo:
+      name: to
+      in: query
+      required: true
+      schema:
+        type: string
+        format: date-time
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 200
+    PageCursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+    IdempotencyKeyHeader:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: "Idempotency key for safely retrying POST requests."
+      schema:
+        type: string
+        maxLength: 128
+    AdvisoryId:
+      name: advisory_id
+      in: path
+      required: true
+      schema: { type: string }
+    CaseId:
+      name: case_id
+      in: path
+      required: true
+      schema: { type: string }
+    ActionRequestId:
+      name: action_request_id
+      in: path
+      required: true
+      schema: { type: string }
+    ApprovalId:
+      name: approval_id
+      in: path
+      required: true
+      schema: { type: string }
+
+  headers:
+    ETag:
+      description: "Entity tag for caching."
+      schema: { type: string }
+    XCanonicalHash:
+      description: "SHA-256 hash of canonical TIF document."
+      schema: { type: string }
+    XGeneratedAt:
+      description: "Timestamp when TIF was generated."
+      schema: { type: string, format: date-time }
+    XSnapshotAt:
+      description: "Timestamp for the state snapshot."
+      schema: { type: string, format: date-time }
+    XCorrelationId:
+      description: "Correlation ID for tracing across systems (case/work order/etc.)."
+      schema: { type: string }
+    XNextCursor:
+      description: "Cursor token for the next page."
+      schema: { type: string }
+    XActionRequestId:
+      description: "Action request ID assigned by FTAI."
+      schema: { type: string }
+
+  responses:
+    BadRequest:
+      description: "Bad request"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "Unauthorized"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "Forbidden"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "Not found"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: "Conflict / idempotency / state conflict"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PreconditionFailed:
+      description: "Preconditions failed at execution time"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: "Query too large / too many points"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+
+    # ---------------------------
+    # Common primitives
+    # ---------------------------
+
+    Error:
+      type: object
+      required: [error, message, status]
+      properties:
+        error:
+          type: string
+          description: "Machine-readable error code"
+        message:
+          type: string
+          description: "Human-readable error message"
+        status:
+          type: integer
+        details:
+          type: object
+          additionalProperties: true
+        correlation_id:
+          type: string
+
+    Conformance:
+      type: object
+      properties:
+        profiles:
+          type: array
+          items: { type: string }
+
+    Discovery:
+      type: object
+      required: [ftai_version, server_time, endpoints, capabilities]
+      properties:
+        ftai_version:
+          type: string
+        server_time:
+          type: string
+          format: date-time
+        conformance:
+          $ref: "#/components/schemas/Conformance"
+        endpoints:
+          type: object
+          additionalProperties: { type: string }
+        capabilities:
+          $ref: "#/components/schemas/Capabilities"
+
+    Capabilities:
+      type: object
+      required:
+        - supports_streaming
+        - supports_actions
+        - supports_approvals
+        - supports_execution
+        - supports_advisories
+        - supports_audit_read
+      properties:
+        supports_streaming: { type: boolean }
+        supports_actions: { type: boolean }
+        supports_approvals: { type: boolean }
+        supports_execution: { type: boolean }
+        supports_advisories: { type: boolean }
+        supports_audit_read: { type: boolean }
+
+    # ---------------------------
+    # State / Metrics / Events
+    # ---------------------------
+
+    FacilityOverallState:
+      type: string
+      enum: [NORMAL, ADVISORY, WARNING, INCIDENT, UNKNOWN]
+
+    FacilityState:
+      type: object
+      required: [facility_id, timestamp, overall_state]
+      properties:
+        facility_id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        overall_state:
+          $ref: "#/components/schemas/FacilityOverallState"
+
+        active_cases:
+          type: array
+          items:
+            $ref: "#/components/schemas/CaseSummary"
+
+        redundancy:
+          type: array
+          description: "Subsystem redundancy posture (N+1 intact/degraded/etc.)"
+          items:
+            $ref: "#/components/schemas/RedundancyGroupState"
+
+        metrics_rollup:
+          type: object
+          description: "Compact rollup of key metrics (implementation-defined keys)."
+          additionalProperties:
+            oneOf:
+              - type: number
+              - type: string
+              - type: boolean
+
+        alerts_top:
+          type: array
+          items:
+            $ref: "#/components/schemas/AlertSummary"
+
+        recent_changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChangeSummary"
+
+        links:
+          type: object
+          description: "Pointers to deeper queries (implementation-defined)."
+          additionalProperties: { type: string }
+
+    PagedFacilityStateHistory:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FacilityState"
+        next_cursor:
+          type: string
+          nullable: true
+
+    RedundancyGroupState:
+      type: object
+      required: [group_id, state]
+      properties:
+        group_id: { type: string }
+        state:
+          type: string
+          enum: [OK, DEGRADED, FAILED, UNKNOWN]
+        note: { type: string }
+
+    AlertSummary:
+      type: object
+      required: [source, code]
+      properties:
+        source: { type: string }
+        code: { type: string }
+        count_10m: { type: integer, minimum: 0 }
+        severity:
+          $ref: "#/components/schemas/EventSeverity"
+
+    ChangeSummary:
+      type: object
+      required: [t, event]
+      properties:
+        t:
+          type: string
+          format: date-time
+        event:
+          type: string
+
+    MetricDefinition:
+      type: object
+      required: [key, unit]
+      properties:
+        key: { type: string }
+        unit: { type: string }
+        domain: { type: string }
+        meaning: { type: string }
+        normal_range:
+          type: object
+          properties:
+            min: { type: number }
+            max: { type: number }
+        aggregations_supported:
+          type: array
+          items:
+            type: string
+            enum: [raw, avg, min, max, sum, p50, p95, p99, delta]
+
+    MetricsCatalog:
+      type: object
+      required: [metrics]
+      properties:
+        metrics:
+          type: array
+          items:
+            $ref: "#/components/schemas/MetricDefinition"
+
+    MetricsQueryRequest:
+      type: object
+      required: [from, to, series]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        series:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/MetricsSeriesQuery"
+        max_points:
+          type: integer
+          minimum: 1
+          maximum: 200000
+          default: 20000
+
+    MetricsSeriesQuery:
+      type: object
+
+      required: [key]
+      properties:
+        key: { type: string }
+        aggregation:
+          type: string
+          enum: [raw, avg, min, max, sum, p50, p95, p99, delta]
+          default: avg
+        interval_seconds:
+          type: integer
+          minimum: 1
+          description: "Downsample interval."
+        filters:
+          type: object
+          additionalProperties: true
+
+    MetricsQueryResponse:
+      type: object
+      required: [from, to, series]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        series:
+          type: array
+          items:
+            $ref: "#/components/schemas/MetricsSeriesResult"
+
+    MetricsSeriesResult:
+      type: object
+      required: [key, points]
+      properties:
+        key: { type: string }
+        unit: { type: string }
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/TimePoint"
+        summary:
+          type: object
+          additionalProperties: true
+
+    TimePoint:
+      type: object
+      required: [t, v]
+      properties:
+        t: { type: string, format: date-time }
+        v:
+          oneOf:
+            - type: number
+            - type: string
+            - type: boolean
+
+    EventSeverity:
+      type: string
+      enum: [INFO, LOW, MEDIUM, HIGH, CRITICAL]
+
+    FacilityEvent:
+      type: object
+      required: [event_id, timestamp, code, severity, message]
+      properties:
+        event_id: { type: string }
+        timestamp: { type: string, format: date-time }
+        code: { type: string }
+        severity:
+          $ref: "#/components/schemas/EventSeverity"
+        message: { type: string }
+        domain: { type: string }
+        asset_id: { type: string }
+        zone_id: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+        correlation_id: { type: string }
+
+    PagedEvents:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/FacilityEvent"
+        next_cursor:
+          type: string
+          nullable: true
+
+    # ---------------------------
+    # Advisories
+    # ---------------------------
+
+    AdvisorySeverity:
+      type: string
+      enum: [INFO, LOW, MEDIUM, HIGH, CRITICAL]
+
+    AdvisoryType:
+      type: string
+      enum: [FYI, RECOMMENDED_ACTION, APPROVAL_NEEDED, INCIDENT_UPDATE, OPTIMIZATION]
+
+    AdvisoryCreateRequest:
+      type: object
+      required: [type, severity, title, message]
+      properties:
+        type:
+          $ref: "#/components/schemas/AdvisoryType"
+        severity:
+          $ref: "#/components/schemas/AdvisorySeverity"
+        title: { type: string }
+        message: { type: string }
+        audience:
+          $ref: "#/components/schemas/Audience"
+        context:
+          type: object
+          additionalProperties: true
+        recommended_actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecommendedAction"
+        evidence_links:
+          type: array
+          items: { type: string }
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        requires_ack:
+          type: boolean
+          default: false
+        correlation_id:
+          type: string
+
+    Advisory:
+      allOf:
+        - $ref: "#/components/schemas/AdvisoryCreateRequest"
+        - type: object
+          required: [advisory_id, created_at, status]
+          properties:
+            advisory_id: { type: string }
+            created_at: { type: string, format: date-time }
+            status:
+              type: string
+              enum: [ACTIVE, EXPIRED, RESOLVED]
+            acknowledgements:
+              type: array
+              items:
+                $ref: "#/components/schemas/Acknowledgement"
+
+    Audience:
+      type: object
+      description: "Target audience for the advisory."
+      properties:
+        roles:
+          type: array
+          items: { type: string }
+        users:
+          type: array
+          items: { type: string }
+        teams:
+          type: array
+          items: { type: string }
+
+    RecommendedAction:
+      type: object
+      required: [action_id, parameters]
+      properties:
+        action_id: { type: string }
+        parameters:
+          type: object
+          additionalProperties: true
+        justification: { type: string }
+
+    Acknowledgement:
+      type: object
+      required: [by, at]
+      properties:
+        by: { type: string }
+        at: { type: string, format: date-time }
+        note: { type: string }
+
+    AdvisoryAckRequest:
+      type: object
+      required: [ack_by]
+      properties:
+        ack_by: { type: string }
+        note: { type: string }
+
+    AdvisoryAckResponse:
+      type: object
+      required: [advisory_id, status]
+      properties:
+        advisory_id: { type: string }
+        status: { type: string }
+        acknowledgement:
+          $ref: "#/components/schemas/Acknowledgement"
+
+    PagedAdvisories:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Advisory"
+        next_cursor:
+          type: string
+          nullable: true
+
+    # ---------------------------
+    # Cases
+    # ---------------------------
+
+    CaseSeverity:
+      type: string
+      enum: [P0, P1, P2, P3, P4, INFO]
+
+    CaseStatus:
+      type: string
+      enum: [OPEN, MITIGATING, MONITORING, CLOSED]
+
+    CaseType:
+      type: string
+      enum: [INCIDENT, INVESTIGATION, OPTIMIZATION, MAINTENANCE, SECURITY]
+
+    CaseSummary:
+      type: object
+      required: [case_id, title, severity, status]
+      properties:
+        case_id: { type: string }
+        title: { type: string }
+        severity:
+          $ref: "#/components/schemas/CaseSeverity"
+        status:
+          $ref: "#/components/schemas/CaseStatus"
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
+
+    CaseCreateRequest:
+      type: object
+      required: [title, type, severity]
+      properties:
+        title: { type: string }
+        type:
+          $ref: "#/components/schemas/CaseType"
+        severity:
+          $ref: "#/components/schemas/CaseSeverity"
+        description: { type: string }
+        related:
+          type: object
+          properties:
+            asset_ids:
+              type: array
+              items: { type: string }
+            zone_ids:
+              type: array
+              items: { type: string }
+            event_ids:
+              type: array
+              items: { type: string }
+        evidence_links:
+          type: array
+          items: { type: string }
+        hypothesis:
+          type: array
+          items:
+            $ref: "#/components/schemas/Hypothesis"
+        correlation_id: { type: string }
+
+    Hypothesis:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        evidence_links:
+          type: array
+          items: { type: string }
+
+    CaseUpdateRequest:
+      type: object
+      properties:
+        status:
+          $ref: "#/components/schemas/CaseStatus"
+        add_note:
+          $ref: "#/components/schemas/CaseNote"
+        add_timeline_event:
+          $ref: "#/components/schemas/CaseTimelineEvent"
+        add_hypothesis:
+          $ref: "#/components/schemas/Hypothesis"
+
+    Case:
+      allOf:
+        - $ref: "#/components/schemas/CaseCreateRequest"
+        - type: object
+          required: [case_id, created_at, status]
+          properties:
+            case_id: { type: string }
+            created_at: { type: string, format: date-time }
+            status:
+              $ref: "#/components/schemas/CaseStatus"
+            notes:
+              type: array
+              items:
+                $ref: "#/components/schemas/CaseNote"
+            timeline:
+              type: array
+              items:
+                $ref: "#/components/schemas/CaseTimelineEvent"
+
+    CaseNote:
+      type: object
+      required: [by, at, text]
+      properties:
+        by: { type: string }
+        at: { type: string, format: date-time }
+        text: { type: string }
+
+    CaseTimelineEvent:
+      type: object
+      required: [at, event]
+      properties:
+        at: { type: string, format: date-time }
+        event: { type: string }
+        attributes:
+          type: object
+          additionalProperties: true
+
+    PagedCases:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Case"
+        next_cursor:
+          type: string
+          nullable: true
+
+    # ---------------------------
+    # Actions / Approvals
+    # ---------------------------
+
+    RequestedMode:
+      type: string
+      enum: [request_approval, execute_if_allowed]
+
+    ActionRequest:
+      type: object
+      required: [action_id, parameters, justification, requested_mode]
+      properties:
+        idempotency_key:
+          type: string
+          description: "Idempotency key (can also be provided via Idempotency-Key header)."
+        correlation_id:
+          type: string
+          description: "Case ID / work order ID / incident ID / caller trace ID."
+        requested_by:
+          $ref: "#/components/schemas/RequestedBy"
+        action_id:
+          type: string
+          description: "Action identifier declared in TIF controls (e.g., ACT.CRAH.SETPOINT)."
+        parameters:
+          type: object
+          description: "Action parameters; validated against the action schema declared in TIF."
+          additionalProperties: true
+        justification:
+          $ref: "#/components/schemas/Justification"
+        requested_mode:
+          $ref: "#/components/schemas/RequestedMode"
+
+    RequestedBy:
+      type: object
+      properties:
+        agent_id: { type: string }
+        human_user_id:
+          type: string
+          nullable: true
+        client_device_id:
+          type: string
+          nullable: true
+
+    Justification:
+      type: object
+      required: [summary]
+      properties:
+        summary: { type: string }
+        evidence:
+          type: array
+          items:
+            $ref: "#/components/schemas/EvidenceRef"
+
+    EvidenceRef:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [metric, event, document, url, query_ref]
+        key: { type: string }
+        code: { type: string }
+        range: { type: string }
+        url: { type: string }
+        note: { type: string }
+
+    ActionDecisionType:
+      type: string
+      enum: [DENIED, PENDING_APPROVAL, EXECUTED, ACCEPTED]
+
+    PolicyEvaluation:
+      type: object
+      required: [ai_tier, allowed, preconditions]
+      properties:
+        ai_tier: { type: integer, minimum: 0, maximum: 5 }
+        allowed: { type: boolean }
+        requires_approval: { type: boolean }
+        required_roles:
+          type: array
+          items: { type: string }
+        preconditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PreconditionResult"
+        envelope_check:
+          $ref: "#/components/schemas/EnvelopeCheck"
+        rate_limit_check:
+          $ref: "#/components/schemas/RateLimitCheck"
+        window_check:
+          $ref: "#/components/schemas/WindowCheck"
+        lockout_check:
+          $ref: "#/components/schemas/LockoutCheck"
+
+    PreconditionResult:
+      type: object
+      required: [name, ok]
+      properties:
+        name: { type: string }
+        ok: { type: boolean }
+        details:
+          type: object
+          additionalProperties: true
+
+    EnvelopeCheck:
+      type: object
+      properties:
+        ok: { type: boolean }
+        details:
+          type: object
+          additionalProperties: true
+
+    RateLimitCheck:
+      type: object
+      properties:
+        ok: { type: boolean }
+        retry_after_seconds: { type: integer }
+        details:
+          type: object
+          additionalProperties: true
+
+    WindowCheck:
+      type: object
+      properties:
+        ok: { type: boolean }
+        active_window: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+
+    LockoutCheck:
+      type: object
+      properties:
+        ok: { type: boolean }
+        active_lockouts:
+          type: array
+          items: { type: string }
+
+    ActionDecision:
+      type: object
+      required: [action_request_id, decision, policy_evaluation]
+      properties:
+        action_request_id: { type: string }
+        decision:
+          $ref: "#/components/schemas/ActionDecisionType"
+        policy_evaluation:
+          $ref: "#/components/schemas/PolicyEvaluation"
+        approval:
+          $ref: "#/components/schemas/ApprovalSummary"
+        execution:
+          $ref: "#/components/schemas/ActionExecution"
+        denial_reason:
+          type: string
+          nullable: true
+
+    ActionRequestResource:
+      type: object
+      required: [action_request_id, action_id, parameters, status, created_at]
+      properties:
+        action_request_id: { type: string }
+        action_id: { type: string }
+        parameters:
+          type: object
+          additionalProperties: true
+        status:
+          type: string
+          enum: [PENDING_APPROVAL, APPROVED, DENIED, EXECUTING, EXECUTED, FAILED, ABORTED, EXPIRED]
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        approval_id: { type: string, nullable: true }
+        correlation_id: { type: string, nullable: true }
+        policy_evaluation:
+          $ref: "#/components/schemas/PolicyEvaluation"
+
+    ApprovalStatus:
+      type: string
+      enum: [PENDING, APPROVED, DENIED, EXPIRED, CANCELLED]
+
+    ApprovalSummary:
+      type: object
+      required: [approval_id, status, min_approvers]
+      properties:
+        approval_id: { type: string }
+        status:
+          $ref: "#/components/schemas/ApprovalStatus"
+        min_approvers: { type: integer, minimum: 1 }
+
+    Approval:
+      type: object
+      required: [approval_id, status, action_request_id, min_approvers, required_roles, created_at]
+      properties:
+        approval_id: { type: string }
+        status:
+          $ref: "#/components/schemas/ApprovalStatus"
+        action_request_id: { type: string }
+        min_approvers: { type: integer }
+        required_roles:
+          type: array
+          items: { type: string }
+        approvals:
+          type: array
+          items:
+            $ref: "#/components/schemas/ApprovalVote"
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+        reason: { type: string, nullable: true }
+
+    ApprovalVote:
+      type: object
+      required: [by, at, decision]
+      properties:
+        by: { type: string }
+        at: { type: string, format: date-time }
+        decision:
+          type: string
+          enum: [APPROVE, DENY]
+        note: { type: string }
+
+    ApprovalDecisionRequest:
+      type: object
+      required: [by, note]
+      properties:
+        by: { type: string }
+        note: { type: string }
+
+    ActionExecution:
+      type: object
+      required: [execution_id, status, started_at]
+      properties:
+        execution_id: { type: string }
+        status:
+          type: string
+          enum: [STARTED, COMPLETED, FAILED]
+        started_at: { type: string, format: date-time }
+        completed_at: { type: string, format: date-time, nullable: true }
+        adapter:
+          type: object
+          properties:
+            name: { type: string }
+            device_ref: { type: string }
+        results:
+          type: object
+          additionalProperties: true
+        error:
+          $ref: "#/components/schemas/Error"
+
+    AbortRequest:
+      type: object
+      properties:
+        reason: { type: string }
+
+    AbortResponse:
+      type: object
+      required: [action_request_id, aborted]
+      properties:
+        action_request_id: { type: string }
+        aborted: { type: boolean }
+        message: { type: string }
+
+    ActionsCatalog:
+      type: object
+      required: [actions]
+      properties:
+        actions:
+          type: array
+          items:
+            $ref: "#/components/schemas/EffectiveAction"
+
+    EffectiveAction:
+      type: object
+      required: [action_id, name, target_types, parameters_schema, effective_policy]
+      properties:
+        action_id: { type: string }
+        name: { type: string }
+        target_types:
+          type: array
+          items: { type: string }
+        parameters_schema:
+          type: object
+          description: "JSON Schema-like object for parameters"
+          additionalProperties: true
+        effective_policy:
+          $ref: "#/components/schemas/EffectiveActionPolicy"
+
+    EffectiveActionPolicy:
+      type: object
+      properties:
+        allowed_now: { type: boolean }
+        requires_approval: { type: boolean }
+        required_roles:
+          type: array
+          items: { type: string }
+        envelope:
+          type: object
+          additionalProperties: true
+        rate_limit:
+          type: object
+          additionalProperties: true
+        blocked_by_lockouts:
+          type: array
+          items: { type: string }
+
+    # ---------------------------
+    # Effective constraints
+    # ---------------------------
+
+    EffectiveConstraints:
+      type: object
+      required: [ai_tier, execution_enabled, query_limits, lockouts, windows]
+      properties:
+        ai_tier: { type: integer, minimum: 0, maximum: 5 }
+        execution_enabled: { type: boolean }
+        query_limits:
+          type: object
+          required: [max_metrics_points, max_time_range_hours, max_events_page_size]
+          properties:
+            max_metrics_points: { type: integer }
+            max_time_range_hours: { type: integer }
+            max_events_page_size: { type: integer }
+        lockouts:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveLockout"
+        windows:
+          type: array
+          items:
+            $ref: "#/components/schemas/Window"
+        temporary_overrides:
+          type: array
+          items:
+            $ref: "#/components/schemas/Override"
+
+    ActiveLockout:
+      type: object
+      required: [lockout_id, scope, reason]
+      properties:
+        lockout_id: { type: string }
+        scope:
+          type: object
+          additionalProperties: true
+        reason: { type: string }
+        active: { type: boolean, default: true }
+
+    Window:
+      type: object
+      required: [name, tz, rrule, duration_minutes]
+      properties:
+        name: { type: string }
+        tz: { type: string }
+        rrule: { type: string }
+        duration_minutes: { type: integer, minimum: 1 }
+
+    Override:
+      type: object
+      required: [override_id, description, active]
+      properties:
+        override_id: { type: string }
+        description: { type: string }
+        active: { type: boolean }
+        expires_at: { type: string, format: date-time, nullable: true }
+
+    # ---------------------------
+    # Audit
+    # ---------------------------
+
+    AuditCategory:
+      type: string
+      enum: [READ, WRITE, ACTION_REQUEST, APPROVAL, ACTION_EXECUTION, AUTHZ, SYSTEM]
+
+    AuditRecord:
+      type: object
+      required: [record_id, at, category, principal_id, operation, decision]
+      properties:
+        record_id: { type: string }
+        at: { type: string, format: date-time }
+        category:
+          $ref: "#/components/schemas/AuditCategory"
+        principal_id: { type: string }
+        human_user_id: { type: string, nullable: true }
+        client_device_id: { type: string, nullable: true }
+        operation: { type: string }
+        resource: { type: string, nullable: true }
+        decision:
+          type: string
+          enum: [ALLOW, DENY, PENDING, COMPLETE, FAIL]
+        correlation_id: { type: string, nullable: true }
+        request:
+          type: object
+          additionalProperties: true
+        response:
+          type: object
+          additionalProperties: true
+
+    PagedAuditRecords:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditRecord"
+        next_cursor:
+          type: string
+          nullable: true
