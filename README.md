@@ -107,6 +107,7 @@ FACET also enables facilities to:
 
 FACET is typically deployed as a **gateway** between the facility systems and AI agents:
 
+```
  +-------------------+       +----------------------+
  |    AI Agent(s)    |       |  Human Interfaces    |
  | (LLM + Tool Use)  |       | (Portal/Kiosk/Mobile)|
@@ -128,4 +129,6 @@ FACET is typically deployed as a **gateway** between the facility systems and AI
  +--------------------------------------------------+
  | Facility Systems (BMS/EPMS/DCIM/ACS/VMS/SCADA etc)|
  +--------------------------------------------------+
+```
+
 
